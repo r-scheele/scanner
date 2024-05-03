@@ -2,106 +2,178 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"sync"
 
-	"github.com/dutchcoders/go-clamd"
-	"github.com/labstack/echo/v4"
+	"minio.io/clamd"
 )
 
-func pingHandler(clam *clamd.Clamd) echo.HandlerFunc {
-	return func(c echo.Context) error {
+func ping(clam *clamd.Clamd) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
 		err := clam.Ping()
 		if err != nil {
-			c.Logger().Error(err)
-			return echo.NewHTTPError(500, "Could not ping clamd")
+			log.Println(err)
+			http.Error(w, "Could not ping clamd", http.StatusInternalServerError)
+			return
 		}
-		return c.JSON(200, "OK")
+		fmt.Fprintln(w, "OK")
 	}
 }
 
-// Modify your scanResponseHandler function
-func scanResponseHandler(clam *clamd.Clamd) echo.HandlerFunc {
-
-	return func(c echo.Context) error {
-		name := c.FormValue("name")
-		file, err := c.FormFile("file")
-		if err != nil {
-			c.Logger().Error(err)
-			return echo.NewHTTPError(500, "Could not get file")
+func scanStream(clam *clamd.Clamd) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
 		}
-		src, err := file.Open()
-		if err != nil {
-			c.Logger().Error(err)
-			return echo.NewHTTPError(500, "Could not open file")
+
+		// Read request body stream - Adjust maxFileSize as needed
+		const maxFileSize = 5000 * 1024 * 1024 // 5000 MB
+		body := r.Body
+		defer body.Close()
+
+		var buf bytes.Buffer
+		if _, err := io.CopyN(&buf, body, maxFileSize+1); err != nil && err != io.EOF {
+			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+			return
 		}
-		defer src.Close()
-		filesScanned.Inc()
 
-		// Define chunk size
-		const chunkSize = 40 * 1024 * 1024 // 40MB
+		fileSize := int64(buf.Len())
+		if fileSize > maxFileSize {
+			http.Error(w, "File size exceeds the limit", http.StatusBadRequest)
+			return
+		}
 
-		// Create a buffered channel to collect scan results
-		results := make(chan *clamd.ScanResult, 1)
+		// Determine chunk size
+		const chunkSize = 450 * 1024 * 1024 // 450 MB
+		numChunks := (fileSize + chunkSize - 1) / chunkSize
 
-		// Start a pool of worker goroutines
+		// Start streaming scan
+		resChan := make(chan *clamd.ScanResult)
 		var wg sync.WaitGroup
-		for {
-			buf := make([]byte, chunkSize)
-			n, err := src.Read(buf)
-			if err != nil {
-				if err == io.EOF {
-					break // Reached end of file, exit the loop
-				} else {
-					c.Logger().Error(err)
-					results <- &clamd.ScanResult{Status: "ERROR", Raw: "Could not read file", Description: err.Error()}
-					return c.JSON(500, "Could not read file")
-				}
+		for i := int64(0); i < numChunks; i++ {
+			start := i * chunkSize
+			end := (i + 1) * chunkSize
+			if end > fileSize {
+				end = fileSize
 			}
+
+			chunkReader := bytes.NewReader(buf.Bytes()[start:end])
+
 			wg.Add(1)
-			go func(chunk []byte, size int) {
+			go func() {
 				defer wg.Done()
-				// Send the chunk for scanning
-				response, err := clam.ScanStream(bytes.NewReader(chunk[:size]), make(chan bool))
+				ch, err := clam.ScanStream(chunkReader, make(chan bool))
 				if err != nil {
-					c.Logger().Error(err)
-					results <- &clamd.ScanResult{Status: "ERROR", Raw: "Could not scan chunk", Description: err.Error()}
+					fmt.Printf("Error scanning stream: %s\n", err.Error())
 					return
 				}
-				result := <-response
-				results <- result // Send the scan result to the channel
-			}(buf, n)
+				for res := range ch {
+					resChan <- res
+				}
+			}()
 		}
 
-		// Close the results channel after all chunks have been processed
+		// Wait for all scans to complete
+		go func() {
+			wg.Wait()
+			close(resChan)
+		}()
+
+		// Collect scan results
+		var scanResults []*clamd.ScanResult
+		for res := range resChan {
+			scanResults = append(scanResults, res)
+		}
+
+		// Encode scan results as JSON and send response
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(scanResults); err != nil {
+			http.Error(w, "Failed to encode scan results", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+func scanFile(clam *clamd.Clamd) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Parse request body to extract file path
+		var path string
+		if err := json.NewDecoder(r.Body).Decode(&path); err != nil {
+			http.Error(w, "Failed to decode request body", http.StatusBadRequest)
+			return
+		}
+
+		// Scan the file path
+		ch, err := clam.ScanFile(path)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("Error scanning file %s: %v", path, err), http.StatusInternalServerError)
+			return
+		}
+
+		// Collect scan results
+		var scanResults []*clamd.ScanResult
+		for res := range ch {
+			scanResults = append(scanResults, res)
+		}
+
+		// Encode scan results as JSON and send response
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(scanResults); err != nil {
+			http.Error(w, "Failed to encode scan results", http.StatusInternalServerError)
+			return
+		}
+	}
+}
+
+func scanFiles(clam *clamd.Clamd) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Parse request body to extract file paths
+		var paths []string
+		if err := json.NewDecoder(r.Body).Decode(&paths); err != nil {
+			http.Error(w, "Failed to decode request body", http.StatusBadRequest)
+			return
+		}
+
+		// Scan each file path using MultiScanFile
+		results := make(chan *clamd.ScanResult)
+		var wg sync.WaitGroup
+		for _, path := range paths {
+			wg.Add(1)
+			go func(p string) {
+				defer wg.Done()
+				ch, err := clam.MultiScanFile(p)
+				if err != nil {
+					log.Printf("Error scanning file %s: %v", p, err)
+					return
+				}
+				for res := range ch {
+					results <- res
+				}
+			}(path)
+		}
+
+		// Wait for all scans to complete
 		go func() {
 			wg.Wait()
 			close(results)
 		}()
 
-		// Collect scan results
+		// Collect scan results and send them to the client
 		var scanResults []*clamd.ScanResult
-		for result := range results {
-			scanResults = append(scanResults, result)
+		for res := range results {
+			scanResults = append(scanResults, res)
 		}
 
-		// Check the scan results
-		for _, result := range scanResults {
-			if result.Status == "FOUND" {
-				c.Logger().Errorf("Malware detected in file %v -- %v", name, result.Raw)
-				filesPositive.Inc()
-				return c.JSON(451, result) // Return error response with scan result
-			} else if result.Status == "ERROR" {
-				c.Logger().Errorf("Error scanning file %v -- %v", name, result.Description)
-				return c.JSON(500, result) // Return error response with scan result
-			}
+		// Encode scan results as JSON and send response
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(scanResults); err != nil {
+			http.Error(w, "Failed to encode scan results", http.StatusInternalServerError)
+			return
 		}
-
-		c.Logger().Infof("No malware detected in file %v", name)
-		filesNegative.Inc()
-
-		// Return the response similar to the previous code
-		scanResult := &clamd.ScanResult{Status: "OK", Raw: "stream: OK", Description: "", Path: "stream", Hash: "", Size: 0}
-		return c.JSON(200, scanResult)
 	}
 }

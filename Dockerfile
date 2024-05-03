@@ -10,8 +10,11 @@ COPY go.mod go.sum ./
 # Download dependencies in a separate layer to leverage Docker cache
 RUN go mod download
 
+# Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
+RUN go mod tidy
+
 # Copy the source code files
-COPY main.go server.go ./
+COPY ./ ./
 
 # Build the binary with minimal footprint
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o scanner .

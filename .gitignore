@@ -32,3 +32,5 @@ kobelogs.tar
 /minio.io
 /statuscode405_nia_verbose.json
 # End of https://www.toptal.com/developers/gitignore/api/go
+
+.DS_Store

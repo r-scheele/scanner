@@ -1,81 +1,89 @@
-## File Health Analysis with ClamAV and Go
+# File Health Analysis with ClamAV and Go
 
-Usage
-======
-
+Testing:
 
 Set Environment Variables: 
+
 - CLAMD_HOST = localhost
 - CLAMD_PORT = 3310
 - LISTEN_PORT = 8080
 
 
+Start ClamAV and Scanner:
 
-`docker run --name clamav -v ${PWD}/clamdata:/var/lib/clamav -d -p 3310:3310 clamav/clamav-debian:latest`
+```bash
+docker network create clamav_net
+```
 
-`docker run -e CLAMD_HOST=clamav --link=clamav -p 8080:8080 rscheele3214/scanner:latest`
+```bash
+docker run --name clamav -v ${PWD}/clamdata:/var/lib/clamav -d -p 3310:3310 --network clamav_net clamav/clamav-debian:latest
+```
+
+```bash
+docker run -e CLAMD_HOST=clamav -p 8080:8080 --network clamav_net rscheele3214/scanner:latest
+```
+
 
 
 
 API:
-----
 
-/ and /healthz  Both run a clamd.Ping and return OK if ClamD is contactable, error if not. 
-Example:
-```
-curl -i http://localhost:8080/
-HTTP/1.1 200 OK
-Content-Type: application/json; charset=UTF-8
-Vary: Origin
-Date: Fri, 02 Sep 2022 09:54:30 GMT
-Content-Length: 5
+The scanner provides the following endpoints for scanning files:
 
-"OK"
-```
+1. **Ping Handler**:
 
-error: 
+   - **Method**: GET
+   - **URL**: `/ping`
 
-```
-curl -i http://localhost:8080/
-HTTP/1.1 500 Internal Server Error
-Content-Type: application/json; charset=UTF-8
-Vary: Origin
-Date: Fri, 02 Sep 2022 10:01:15 GMT
-Content-Length: 35
+2. **Scan Stream Handler**:
 
-{"message":"Could not ping clamd"}
-```
+   - **Method**: POST
+   - **URL**: `/scan/stream`
+   - **Body**: Stream data to be scanned
+
+   `curl -i -F "name=kobelogs" -F "file=@/Users/Abdulrahman/scanner/kobelogs.tar" http://localhost:8080/scan/stream`
+
+    ```
+    HTTP/1.1 100 Continue
+
+    HTTP/1.1 200 OK
+    Content-Type: application/json
+    Date: Fri, 03 May 2024 15:11:47 GMT
+    Content-Length: 89
+
+    [{"Raw":"stream: OK","Description":"","Path":"stream","Hash":"","Size":0,"Status":"OK"}]
+    ```
+
+3. **Scan File Handler**:
+
+   - **Method**: POST
+   - **URL**: `/scan/file`
+   - **Body**: `{"path": "/path/to/file"}`
+
+4. **Scan Files Handler**:
+
+   - **Method**: POST
+   - **URL**: `/scan/files`
+   - **Body**: `["/path/to/file1", "/path/to/file2", "/path/to/file3"]`
 
 
-Scanning Files
---------------
+Scalability:
 
+Adjust the StreamMaxLength in the clamd.conf file to allow for larger files to be scanned.
 
+1. **Copy the Configuration File**:
+   ```bash
+   docker cp clamav:/etc/clamav/clamd.conf .
+   ```
 
-`/scan` returns a JSON object with the information of what was found in Raw and Description fields.
+2. **Edit Locally**: Edit the copied `clamd.conf` file on your local machine using your preferred text editor.
 
-```
-curl -i -F "name=eicar" -F "file=@./eicar.com" http://localhost:8080/scan
-HTTP/1.1 451 Unavailable For Legal Reasons
-Content-Type: application/json; charset=UTF-8
-Vary: Origin
-Date: Fri, 02 Sep 2022 10:09:45 GMT
-Content-Length: 134
+3. **Copy Back to Container**: 
+   ```bash
+   docker cp clamd.conf clamav:/etc/clamav/clamd.conf
+   ```
 
-{"Raw":"stream: Win.Test.EICAR_HDB-1 FOUND","Description":"Win.Test.EICAR_HDB-1","Path":"stream","Hash":"","Size":0,"Status":"FOUND"}
-```
-
-Clean Files:
-```
-curl -i -F "name=kobelogs" -F "file=@/Users/Abdulrahman/scanner/kobelogs.tar" http://localhost:8080/scan
-HTTP/1.1 100 Continue
-
-HTTP/1.1 200 OK
-Content-Type: application/json
-Vary: Origin
-Date: Thu, 25 Apr 2024 04:20:05 GMT
-Content-Length: 87
-
-{"Raw":"stream: OK","Description":"","Path":"stream","Hash":"","Size":0,"Status":"OK"}
-```
-
+4. **Restart ClamAV**: 
+   ```bash
+   docker restart clamav
+   ```

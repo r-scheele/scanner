@@ -2,58 +2,39 @@ package main
 
 import (
 	"fmt"
-	"os"
+	"log"
+	"net/http"
 
-	"github.com/dutchcoders/go-clamd"
-	promMW "github.com/labstack/echo-contrib/prometheus"
-	"github.com/labstack/echo/v4"
-	"github.com/labstack/echo/v4/middleware"
-	"github.com/prometheus/client_golang/prometheus"
-	"github.com/prometheus/client_golang/prometheus/promauto"
-)
-
-var (
-	filesScanned = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "files_scanned",
-		Help: "Number of files scanned",
-	})
-	filesPositive = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "files_positive",
-		Help: "Number of files with a detected malware signature",
-	})
-	filesNegative = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "files_negative",
-		Help: "Number of files with no detected malware signature",
-	})
+	"github.com/minio/pkg/v2/env"
+	"minio.io/clamd"
 )
 
 func getEnv(key, fallback string) string {
-	value, exists := os.LookupEnv(key)
-	if !exists {
-		value = fallback
-	}
-	return value
+	return env.Get(key, fallback)
 }
 
 func main() {
-
 	clamHost := getEnv("CLAMD_HOST", "localhost")
 	clamPort := getEnv("CLAMD_PORT", "3310")
 	listenPort := getEnv("LISTEN_PORT", "8080")
 
 	clamConnection := clamd.NewClamd(fmt.Sprintf("tcp://%v:%v", clamHost, clamPort))
 
-	e := echo.New()
-	e.Use(middleware.Logger())
-	e.Use(middleware.Recover())
-	e.Use(middleware.CORS())
-	p := promMW.NewPrometheus("echo", nil)
-	p.Use(e)
+	err := clamConnection.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	e.GET("/", pingHandler(clamConnection))
-	e.GET("/healthz", pingHandler(clamConnection))
+	log.Printf("Connected to clamd on %v:%v", clamHost, clamPort)
+	log.Printf("Listening on port %v", listenPort)
 
-	e.POST("/scan", scanResponseHandler(clamConnection))
+	http.HandleFunc("/scan/stream", scanStream(clamConnection))
+	http.HandleFunc("/ping", ping(clamConnection))
+	http.HandleFunc("/scan/file", scanFile(clamConnection))
+	http.HandleFunc("/scan/files", scanFiles(clamConnection))
 
-	e.Logger.Fatal(e.Start(":" + listenPort))
+	err = http.ListenAndServe(":"+listenPort, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
