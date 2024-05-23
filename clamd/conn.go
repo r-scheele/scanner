@@ -6,7 +6,6 @@ import (
 	"io"
 	"net"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -100,17 +99,17 @@ func parseResult(line string) *ScanResult {
 
 	for i, name := range resultRegex.SubexpNames() {
 		switch name {
-		case "path":
-			res.Path = matches[i]
+		// case "path":
+		// 	res.Path = matches[i]
 		case "desc":
 			res.Description = matches[i]
-		case "virhash":
-			res.Hash = matches[i]
-		case "virsize":
-			i, err := strconv.Atoi(matches[i])
-			if err == nil {
-				res.Size = i
-			}
+		// case "virhash":
+		// 	res.Hash = matches[i]
+		// case "virsize":
+		// 	i, err := strconv.Atoi(matches[i])
+		// 	if err == nil {
+		// 		res.Size = i
+		// 	}
 		case "status":
 			switch matches[i] {
 			case RES_OK:

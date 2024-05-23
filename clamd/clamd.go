@@ -27,11 +27,9 @@ type Stats struct {
 }
 
 type ScanResult struct {
+	FilePath    string
 	Raw         string
 	Description string
-	Path        string
-	Hash        string
-	Size        int
 	Status      string
 }
 

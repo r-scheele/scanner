@@ -1,16 +1,134 @@
 package main
 
 import (
-	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"sync"
 
+	"cloud.google.com/go/storage"
+
 	"minio.io/clamd"
+	"minio.io/config"
 )
+
+func scanPath(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Context to use across API calls
+		ctx := context.Background()
+
+		// Parse JSON body to get the file path in the bucket
+		var data struct {
+			FilePath string `json:"filePath"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			http.Error(w, "Failed to decode request body", http.StatusBadRequest)
+			return
+		}
+
+		bucketName := config.BucketName
+
+		// Setup GCP Storage Client
+		client, err := storage.NewClient(ctx)
+		if err != nil {
+			log.Printf("Failed to create client: %v", err)
+			http.Error(w, "Failed to create storage client", http.StatusInternalServerError)
+			return
+		}
+		defer client.Close()
+
+		// Get handle to the bucket and object
+		bucket := client.Bucket(bucketName)
+		obj := bucket.Object(data.FilePath)
+
+		// Read the file into memory
+		reader, err := obj.NewReader(ctx)
+		if err != nil {
+			log.Printf("Failed to open file: %v", err)
+			http.Error(w, "Failed to read file from bucket", http.StatusBadRequest)
+			return
+		}
+		defer reader.Close()
+
+		// Scan the file using clamd's ScanStream
+		response, err := clam.ScanStream(reader, make(chan bool))
+		if err != nil {
+			http.Error(w, "Failed to scan the file", http.StatusInternalServerError)
+			return
+		}
+
+		// Receive the scan result
+		result := <-response
+		result.FilePath = data.FilePath
+
+		scanResults := []*clamd.ScanResult{}
+		scanResults = append(scanResults, result)
+
+		httpResponse(scanResults, w, config)
+	}
+}
+
+func scanPaths(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.Background()
+
+		var data struct {
+			FilePaths []string `json:"filePaths"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+			http.Error(w, "Failed to decode request body: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		client, err := storage.NewClient(ctx)
+		if err != nil {
+			log.Printf("Failed to create client: %v", err)
+			http.Error(w, "Failed to create storage client", http.StatusInternalServerError)
+			return
+		}
+		defer client.Close()
+
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		scanResults := []*clamd.ScanResult{}
+		bucketName := config.BucketName
+
+		for _, filePath := range data.FilePaths {
+			wg.Add(1)
+			go func(filePath string) {
+				defer wg.Done()
+				obj := client.Bucket(bucketName).Object(filePath)
+
+				reader, err := obj.NewReader(ctx)
+				if err != nil {
+					log.Printf("Failed to open file %s: %v", filePath, err)
+					return
+				}
+				defer reader.Close()
+
+				response, err := clam.ScanStream(reader, make(chan bool))
+				if err != nil {
+					log.Printf("Failed to scan file %s: %v", filePath, err)
+					return
+				}
+
+				result := <-response
+				result.FilePath = filePath
+
+				mu.Lock()
+				scanResults = append(scanResults, result)
+				mu.Unlock()
+			}(filePath)
+		}
+
+		wg.Wait()
+
+		httpResponse(scanResults, w, config)
+	}
+}
 
 func ping(clam *clamd.Clamd) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -24,156 +142,98 @@ func ping(clam *clamd.Clamd) http.HandlerFunc {
 	}
 }
 
-func scanStream(clam *clamd.Clamd) http.HandlerFunc {
+func scanFile(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+
+		// Parse the multipart form
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // Set max memory to 10 MB for multipart form
+			http.Error(w, "Failed to parse multipart form", http.StatusInternalServerError)
 			return
 		}
 
-		// Read request body stream - Adjust maxFileSize as needed
-		const maxFileSize = 5000 * 1024 * 1024 // 5000 MB
-		body := r.Body
-		defer body.Close()
-
-		var buf bytes.Buffer
-		if _, err := io.CopyN(&buf, body, maxFileSize+1); err != nil && err != io.EOF {
-			http.Error(w, "Failed to read request body", http.StatusBadRequest)
+		// Retrieve the file from the form data
+		files := r.MultipartForm.File["file"]
+		if len(files) == 0 {
+			http.Error(w, "No file provided", http.StatusBadRequest)
 			return
 		}
 
-		fileSize := int64(buf.Len())
-		if fileSize > maxFileSize {
-			http.Error(w, "File size exceeds the limit", http.StatusBadRequest)
+		// Open the file
+		file, err := files[0].Open()
+		if err != nil {
+			http.Error(w, "Failed to open the file", http.StatusInternalServerError)
+			return
+		}
+		defer file.Close()
+
+		// Scan the file using clamd's ScanStream
+		response, err := clam.ScanStream(file, make(chan bool))
+		if err != nil {
+			http.Error(w, "Failed to scan the file", http.StatusInternalServerError)
 			return
 		}
 
-		// Determine chunk size
-		const chunkSize = 450 * 1024 * 1024 // 450 MB
-		numChunks := (fileSize + chunkSize - 1) / chunkSize
+		// Receive the scan result
+		result := <-response
 
-		// Start streaming scan
-		resChan := make(chan *clamd.ScanResult)
-		var wg sync.WaitGroup
-		for i := int64(0); i < numChunks; i++ {
-			start := i * chunkSize
-			end := (i + 1) * chunkSize
-			if end > fileSize {
-				end = fileSize
+		// Log the scanning action
+		// Assuming there's a logger configured similarly to the previous example
+		log.Printf("Scanning %s and returning reply", files[0].Filename)
+
+		var scanResults []*clamd.ScanResult
+		scanResults = append(scanResults, result)
+
+		httpResponse(scanResults, w, config)
+
+	}
+}
+
+func scanFiles(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Parse the multipart form
+		if err := r.ParseMultipartForm(10 << 20); err != nil { // Set max memory to 10 MB for multipart form
+			http.Error(w, "Failed to parse multipart form", http.StatusInternalServerError)
+			return
+		}
+
+		// Retrieve the files from the form data
+		files := r.MultipartForm.File["file"]
+		if len(files) == 0 {
+			http.Error(w, "No file provided", http.StatusBadRequest)
+			return
+		}
+
+		var scanResults []*clamd.ScanResult
+
+		// Loop over the files and scan each one
+		for _, fileHeader := range files {
+			file, err := fileHeader.Open()
+			if err != nil {
+				http.Error(w, "Failed to open a file", http.StatusInternalServerError)
+				return
 			}
 
-			chunkReader := bytes.NewReader(buf.Bytes()[start:end])
+			// Ensure the file is closed after processing
+			defer file.Close()
 
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				ch, err := clam.ScanStream(chunkReader, make(chan bool))
-				if err != nil {
-					fmt.Printf("Error scanning stream: %s\n", err.Error())
-					return
-				}
-				for res := range ch {
-					resChan <- res
-				}
-			}()
+			// Scan the file using clamd's ScanStream
+			response, err := clam.ScanStream(file, make(chan bool))
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Failed to scan the file: %s", fileHeader.Filename), http.StatusInternalServerError)
+				return
+			}
+
+			// Receive the scan result
+			result := <-response
+
+			// Log the scanning action
+			log.Printf("Scanning %s and returning reply", fileHeader.Filename)
+
+			// Append result to the scanResults
+			scanResults = append(scanResults, result)
+
 		}
 
-		// Wait for all scans to complete
-		go func() {
-			wg.Wait()
-			close(resChan)
-		}()
-
-		// Collect scan results
-		var scanResults []*clamd.ScanResult
-		for res := range resChan {
-			scanResults = append(scanResults, res)
-		}
-
-		// Encode scan results as JSON and send response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(scanResults); err != nil {
-			http.Error(w, "Failed to encode scan results", http.StatusInternalServerError)
-			return
-		}
-	}
-}
-
-func scanFile(clam *clamd.Clamd) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Parse request body to extract file path
-		var path string
-		if err := json.NewDecoder(r.Body).Decode(&path); err != nil {
-			http.Error(w, "Failed to decode request body", http.StatusBadRequest)
-			return
-		}
-
-		// Scan the file path
-		ch, err := clam.ScanFile(path)
-		if err != nil {
-			http.Error(w, fmt.Sprintf("Error scanning file %s: %v", path, err), http.StatusInternalServerError)
-			return
-		}
-
-		// Collect scan results
-		var scanResults []*clamd.ScanResult
-		for res := range ch {
-			scanResults = append(scanResults, res)
-		}
-
-		// Encode scan results as JSON and send response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(scanResults); err != nil {
-			http.Error(w, "Failed to encode scan results", http.StatusInternalServerError)
-			return
-		}
-	}
-}
-
-func scanFiles(clam *clamd.Clamd) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Parse request body to extract file paths
-		var paths []string
-		if err := json.NewDecoder(r.Body).Decode(&paths); err != nil {
-			http.Error(w, "Failed to decode request body", http.StatusBadRequest)
-			return
-		}
-
-		// Scan each file path using MultiScanFile
-		results := make(chan *clamd.ScanResult)
-		var wg sync.WaitGroup
-		for _, path := range paths {
-			wg.Add(1)
-			go func(p string) {
-				defer wg.Done()
-				ch, err := clam.MultiScanFile(p)
-				if err != nil {
-					log.Printf("Error scanning file %s: %v", p, err)
-					return
-				}
-				for res := range ch {
-					results <- res
-				}
-			}(path)
-		}
-
-		// Wait for all scans to complete
-		go func() {
-			wg.Wait()
-			close(results)
-		}()
-
-		// Collect scan results and send them to the client
-		var scanResults []*clamd.ScanResult
-		for res := range results {
-			scanResults = append(scanResults, res)
-		}
-
-		// Encode scan results as JSON and send response
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(scanResults); err != nil {
-			http.Error(w, "Failed to encode scan results", http.StatusInternalServerError)
-			return
-		}
+		httpResponse(scanResults, w, config)
 	}
 }

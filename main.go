@@ -5,36 +5,31 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/minio/pkg/v2/env"
 	"minio.io/clamd"
+	"minio.io/config"
 )
 
-func getEnv(key, fallback string) string {
-	return env.Get(key, fallback)
-}
-
 func main() {
-	clamHost := getEnv("CLAMD_HOST", "localhost")
-	clamPort := getEnv("CLAMD_PORT", "3310")
-	listenPort := getEnv("LISTEN_PORT", "8080")
+	config := config.LoadConfig()
+	config.ClamAddress = fmt.Sprintf("tcp://%s:%s", config.ClamHost, config.ClamPort)
 
-	clamConnection := clamd.NewClamd(fmt.Sprintf("tcp://%v:%v", clamHost, clamPort))
-
-	err := clamConnection.Ping()
-	if err != nil {
-		log.Fatal(err)
+	// Initialize clamd connection
+	clamConnection := clamd.NewClamd(config.ClamAddress)
+	if err := clamConnection.Ping(); err != nil {
+		log.Fatalf("Failed to connect to clamd at %s: %v", config.ClamAddress, err)
 	}
 
-	log.Printf("Connected to clamd on %v:%v", clamHost, clamPort)
-	log.Printf("Listening on port %v", listenPort)
+	log.Printf("Connected to clamd on %s", config.ClamAddress)
+	log.Printf("Server starting on port %s", config.ListenPort)
 
-	http.HandleFunc("/scan/stream", scanStream(clamConnection))
 	http.HandleFunc("/ping", ping(clamConnection))
-	http.HandleFunc("/scan/file", scanFile(clamConnection))
-	http.HandleFunc("/scan/files", scanFiles(clamConnection))
+	http.HandleFunc("/scan/path", scanPath(clamConnection, config))
+	http.HandleFunc("/scan/paths", scanPaths(clamConnection, config))
+	http.HandleFunc("/scan/file", scanFile(clamConnection, config))
+	http.HandleFunc("/scan/files", scanFiles(clamConnection, config))
 
-	err = http.ListenAndServe(":"+listenPort, nil)
-	if err != nil {
-		log.Fatal(err)
+	// Start HTTP server
+	if err := http.ListenAndServe(":"+config.ListenPort, nil); err != nil {
+		log.Fatalf("Failed to start server: %v", err)
 	}
 }

@@ -27,10 +27,14 @@ go.work
 ### Go Patch ###
 /vendor/
 /Godeps/
-kobelogs.tar
 /clamdata/
+/config/app.env
+/config/peak-essence-171622-ed77209baf22.json
+/config/statuscode405_nia_verbose.json
+/config/kobelogs.tar
 /minio.io
-/statuscode405_nia_verbose.json
+
 # End of https://www.toptal.com/developers/gitignore/api/go
 
 .DS_Store
+@Habeebullah01/google-cloud-sdk
