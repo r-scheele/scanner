@@ -2,13 +2,6 @@
 
 Testing:
 
-Set Environment Variables: 
-
-`export GOOGLE_APPLICATION_CREDENTIALS=/path/to/service_account.json`
-`export CLAMD_HOST=localhost` \
-`export CLAMD_PORT=3310`   \
-`export LISTEN_PORT=8080`
-
 
 Start ClamAV and Scanner:
 
@@ -17,26 +10,20 @@ docker network create clamav_net
 ```
 
 ```bash
-docker run --name clamav -v ${PWD}/clamdata:/var/lib/clamav -d -p 3310:3310 --network clamav_net clamav/clamav-debian:latest
+docker run --name clamav -d -p 3310:3310 --network clamav_net clamav/clamav-debian:latest
 ```
 
 ```bash
-docker run -e CLAMD_HOST=clamav -p 8080:8080 --network clamav_net rscheele3214/scanner:latest
+docker run -e GOOGLE_APPLICATION_CREDENTIALS="/config/peak-essence-171622-ed77209baf22.json" -e CLAMD_HOST=clamav -e BUCKET_NAME="subnet-filescan-test" -e SUBNET_ENDPOINT="http://localhost:8081" -e CLAM_ADDRESS=tcp://clamav:3310 -p 8080:8080 --network clamav_net -v ${PWD}/config:/config rscheele3214/scanner:latest
 ```
 
 
 ```json
 curl -X POST http://localhost:8080/scan/path -H "Content-Type: application/json" -d '{
-    "filePath": "clamav-eicar",
-    "subnetEndpoint": "http://example.com/post-results"
+    "filePath": "clamav-eicar"
 }'
 ```
-```json
-curl -X POST http://localhost:8080/scan/path -H "Content-Type: application/json" -d '{
-    "filePath": "kobelogs.tar",
-    "subnetEndpoint": "http://example.com/post-results"
-}'
-```
+
 
 ```json
 curl -X POST http://localhost:8080/scan/path -H "Content-Type: application/json" -d '{
@@ -47,38 +34,15 @@ curl -X POST http://localhost:8080/scan/path -H "Content-Type: application/json"
 
 ```json
 curl -X POST http://localhost:8080/scan/paths -H "Content-Type: application/json" -d '{
-    "filePaths": ["kobelogs.tar", "clamav-eicar"],
-    "subnetEndpoint": "http://example.com/receive_scan_results"
+    "filePaths": ["kobelogs.tar", "clamav-eicar"]
 }'
 
 
 [{"Raw":"stream: Eicar-Signature FOUND","Description":"Eicar-Signature","Path":"stream","Hash":"","Size":0,"Status":"FOUND"},{"Raw":"stream: OK","Description":"","Path":"stream","Hash":"","Size":0,"Status":"OK"}]
 ```
 
-Scalability:
 
-Adjust the StreamMaxLength in the clamd.conf file to allow for larger files to be scanned.
 
-1. **Copy the Configuration File**:
-   ```bash
-   docker cp clamav:/etc/clamav/clamd.conf ./config
-   ```
-
-2. **Edit Locally**: Edit the copied `clamd.conf` file to change the `StreamMaxLength` value to a higher value.
-
-3. **Copy Back to Container**: 
-   ```bash
-   docker cp ./config/clamd.conf clamav:/etc/clamav/clamd.conf
-   ```
-
-4. **Restart ClamAV**: 
-   ```bash
-   docker restart clamav
-   ```
-
-### Scanning Non-Infected Files
-
-#### Single File Scan
 
 To scan a single, non-infected file, use the following `curl` command:
 

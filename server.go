@@ -52,8 +52,10 @@ func scanPath(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 		}
 		defer reader.Close()
 
+		log.Println("Entering stream")
 		// Scan the file using clamd's ScanStream
 		response, err := clam.ScanStream(reader, make(chan bool))
+		log.Println("after response")
 		if err != nil {
 			http.Error(w, "Failed to scan the file", http.StatusInternalServerError)
 			return

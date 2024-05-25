@@ -6,7 +6,9 @@ WORKDIR /app
 
 # Copy only the necessary dependency files
 COPY go.mod go.sum ./
+# COPY /config/peak-essence-171622-ed77209baf22.json /config/peak-essence-171622-ed77209baf22.json
 
+# ENV GOOGLE_APPLICATION_CREDENTIALS=/config/peak-essence-171622-ed77209baf22.json
 # Download dependencies in a separate layer to leverage Docker cache
 RUN go mod download
 
@@ -35,9 +37,7 @@ COPY --from=builder /app/scanner /app/scanner
 
 # Expose port and set environment variables
 EXPOSE 8080
-ENV CLAMD_HOST=localhost \
-    CLAMD_PORT=3310 \
-    LISTEN_PORT=8080
+
 
 # Set the entrypoint to the scanner application
 ENTRYPOINT ["/app/scanner"]

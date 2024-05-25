@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 
@@ -11,7 +10,6 @@ import (
 
 func main() {
 	config := config.LoadConfig()
-	config.ClamAddress = fmt.Sprintf("tcp://%s:%s", config.ClamHost, config.ClamPort)
 
 	// Initialize clamd connection
 	clamConnection := clamd.NewClamd(config.ClamAddress)
