@@ -1,0 +1,42 @@
+version: "3.9"
+
+services:
+  clamav:
+    image: clamav/clamav-debian:latest
+    ports:
+      - "3310:3310"
+    networks:
+      - clamav_net
+    volumes:
+      - clamav-db:/var/lib/clamav
+
+  scanner:
+    image: rscheele3214/scanner:latest
+    environment:
+      - GOOGLE_APPLICATION_CREDENTIALS=/run/peak-essence-171622-ed77209baf22.json
+      - SUBNET_ENDPOINT=routerapp:8081
+      - DEPLOY_ENV=development
+      - LISTEN_PORT=8080
+      - CLAM_ADDRESS=tcp://clamav:3310
+      - API_TOKEN=123456
+
+    ports:
+      - "8080:8080"
+    networks:
+      - clamav_net
+    volumes:
+      - "./peak-essence-171622-ed77209baf22.json:/run/peak-essence-171622-ed77209baf22.json:ro"
+      - "./subnet-secrets.dev.yaml:/run/secrets/subnet-secrets/subnet-secrets.yaml:ro"
+    depends_on:
+      - clamav
+
+networks:
+  clamav_net:
+    driver: bridge
+
+volumes:
+  clamav-db:
+    driver: local
+ 
+
+

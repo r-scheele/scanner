@@ -38,3 +38,33 @@ go.work
 
 .DS_Store
 @Habeebullah01/google-cloud-sdk
+
+
+# Ignore Docker-related files
+Dockerfile
+docker-compose.yaml
+
+# Ignore Go modules
+go.sum
+
+# Ignore config files
+clamd.conf
+config/
+clamd/
+clamav-db/
+minio.io/
+peak-essence-171622-ed77209baf22.json
+
+# Ignore compiled Go binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Ignore system files
+.DS_Store
+Thumbs.db
+
+# Ignore logs and temporary files
+*.log
+*.tmp

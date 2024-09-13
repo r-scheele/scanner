@@ -1,43 +1,21 @@
-# Use a smaller base image for the builder stage
-FROM golang:1.21.3 as builder
+# Start from the base image
+FROM golang:1.20-alpine
 
-# Set the working directory
+# Set the Current Working Directory inside the container
 WORKDIR /app
 
-# Copy only the necessary dependency files
+# Copy go mod and sum files
 COPY go.mod go.sum ./
-# COPY /config/peak-essence-171622-ed77209baf22.json /config/peak-essence-171622-ed77209baf22.json
-
-# ENV GOOGLE_APPLICATION_CREDENTIALS=/config/peak-essence-171622-ed77209baf22.json
-# Download dependencies in a separate layer to leverage Docker cache
-RUN go mod download
 
 # Download all dependencies. Dependencies will be cached if the go.mod and go.sum files are not changed
-RUN go mod tidy
+RUN go mod download
 
-# Copy the source code files
-COPY ./ ./
-
-# Build the binary with minimal footprint
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o scanner .
-
-# Final stage: Use the official Alpine image for a smaller footprint
-FROM alpine:3.16
-
-# Install ca-certificates and create non-root user in a single layer to reduce layer count
-RUN apk --no-cache add ca-certificates && \
-    addgroup -g 1000 -S app && \
-    adduser -u 1000 -S app -G app
-
-# Set user context
-USER app
-
-# Copy the built binary from the builder stage
-COPY --from=builder /app/scanner /app/scanner
-
-# Expose port and set environment variables
-EXPOSE 8080
+# Copy the source code into the container
+COPY . .
 
 
-# Set the entrypoint to the scanner application
-ENTRYPOINT ["/app/scanner"]
+# Build the Go app
+RUN go build -o main .
+
+# Command to run the executable
+CMD ["./main"]

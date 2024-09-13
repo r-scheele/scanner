@@ -14,22 +14,35 @@ docker run --name clamav -d -p 3310:3310 --network clamav_net clamav/clamav-debi
 ```
 
 ```bash
-docker run -e GOOGLE_APPLICATION_CREDENTIALS="/config/peak-essence-171622-ed77209baf22.json" -e CLAMD_HOST=clamav -e BUCKET_NAME="subnet-filescan-test" -e SUBNET_ENDPOINT="http://localhost:8081" -e CLAM_ADDRESS=tcp://clamav:3310 -p 8080:8080 --network clamav_net -v ${PWD}/config:/config rscheele3214/scanner:latest
+docker run -e GOOGLE_APPLICATION_CREDENTIALS="/config/peak-essence-171622-ed77209baf22.json" -e CLAMD_HOST=clamav -e SUBNET_ENDPOINT="http://localhost:8081" -e API_TOKEN="123456" -e CLAM_ADDRESS=tcp://clamav:3310 -p 8080:8080 --network clamav_net -v ${PWD}/config:/config rscheele3214/scanner:latest
 ```
 
 
 ```json
 curl -X POST http://localhost:8080/scan/path -H "Content-Type: application/json" -d '{
-    "filePath": "clamav-eicar"
+    "filePath": "clamav-eicar",
+    "bucketName": "subnet-filescan-test",
+    "messageId": "123456"
 }'
 ```
 
 
 ```json
-curl -X POST http://localhost:8080/scan/path -H "Content-Type: application/json" -d '{
-    "filePath": "kobelogs.tar"
+curl -X POST http://localhost:8080/scan/paths -H "Content-Type: application/json" -d '{
+    "requests": [
+        {
+            "filePath": "clamav-eicar",
+            "bucketName": "subnet-filescan-test",
+            "messageId": "123456"
+        },
+        {
+            "filePath": "kobelogs.tar",
+            "bucketName": "subnet-filescan-test",
+            "messageId": "123457"
+        }
+    ]
 }'
-[{"Raw":"stream: OK","Description":"","Path":"stream","Hash":"","Size":0,"Status":"OK"}]
+
 ```
 
 ```json

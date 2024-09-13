@@ -11,26 +11,23 @@ import (
 	"cloud.google.com/go/storage"
 
 	"minio.io/clamd"
-	"minio.io/config"
 )
 
-func scanPath(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+func scanPath(clam *clamd.Clamd) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Context to use across API calls
 		ctx := context.Background()
 
-		// Parse JSON body to get the file path in the bucket
+		// Updated data structure to include bucket name and message ID
 		var data struct {
-			FilePath string `json:"filePath"`
+			FilePath   string `json:"filePath"`
+			BucketName string `json:"bucketName"`
+			MessageID  string `json:"messageId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
 			http.Error(w, "Failed to decode request body", http.StatusBadRequest)
 			return
 		}
 
-		bucketName := config.BucketName
-
-		// Setup GCP Storage Client
 		client, err := storage.NewClient(ctx)
 		if err != nil {
 			log.Printf("Failed to create client: %v", err)
@@ -39,11 +36,9 @@ func scanPath(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 		}
 		defer client.Close()
 
-		// Get handle to the bucket and object
-		bucket := client.Bucket(bucketName)
+		bucket := client.Bucket(data.BucketName)
 		obj := bucket.Object(data.FilePath)
 
-		// Read the file into memory
 		reader, err := obj.NewReader(ctx)
 		if err != nil {
 			log.Printf("Failed to open file: %v", err)
@@ -52,32 +47,34 @@ func scanPath(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 		}
 		defer reader.Close()
 
-		log.Println("Entering stream")
-		// Scan the file using clamd's ScanStream
 		response, err := clam.ScanStream(reader, make(chan bool))
-		log.Println("after response")
 		if err != nil {
 			http.Error(w, "Failed to scan the file", http.StatusInternalServerError)
 			return
 		}
 
-		// Receive the scan result
 		result := <-response
 		result.FilePath = data.FilePath
+		result.MessageID = data.MessageID
 
 		scanResults := []*clamd.ScanResult{}
 		scanResults = append(scanResults, result)
 
-		httpResponse(scanResults, w, config)
+		httpResponse(scanResults, w)
 	}
 }
 
-func scanPaths(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+func scanPaths(clam *clamd.Clamd) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.Background()
 
+		// Updated data structure to include a list of files with message ID and bucket name for each
 		var data struct {
-			FilePaths []string `json:"filePaths"`
+			Requests []struct {
+				FilePath   string `json:"filePath"`
+				BucketName string `json:"bucketName"`
+				MessageID  string `json:"messageId"`
+			} `json:"requests"`
 		}
 
 		if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
@@ -96,39 +93,43 @@ func scanPaths(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 		var wg sync.WaitGroup
 		var mu sync.Mutex
 		scanResults := []*clamd.ScanResult{}
-		bucketName := config.BucketName
 
-		for _, filePath := range data.FilePaths {
+		for _, request := range data.Requests {
 			wg.Add(1)
-			go func(filePath string) {
+			go func(request struct {
+				FilePath   string `json:"filePath"`
+				BucketName string `json:"bucketName"`
+				MessageID  string `json:"messageId"`
+			}) {
 				defer wg.Done()
-				obj := client.Bucket(bucketName).Object(filePath)
+				obj := client.Bucket(request.BucketName).Object(request.FilePath)
 
 				reader, err := obj.NewReader(ctx)
 				if err != nil {
-					log.Printf("Failed to open file %s: %v", filePath, err)
+					log.Printf("Failed to open file %s: %v", request.FilePath, err)
 					return
 				}
 				defer reader.Close()
 
 				response, err := clam.ScanStream(reader, make(chan bool))
 				if err != nil {
-					log.Printf("Failed to scan file %s: %v", filePath, err)
+					log.Printf("Failed to scan file %s: %v", request.FilePath, err)
 					return
 				}
 
 				result := <-response
-				result.FilePath = filePath
+				result.FilePath = request.FilePath
+				result.MessageID = request.MessageID
 
 				mu.Lock()
 				scanResults = append(scanResults, result)
 				mu.Unlock()
-			}(filePath)
+			}(request)
 		}
 
 		wg.Wait()
 
-		httpResponse(scanResults, w, config)
+		httpResponse(scanResults, w)
 	}
 }
 
@@ -144,7 +145,7 @@ func ping(clam *clamd.Clamd) http.HandlerFunc {
 	}
 }
 
-func scanFile(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+func scanFile(clam *clamd.Clamd) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 
 		// Parse the multipart form
@@ -185,12 +186,12 @@ func scanFile(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 		var scanResults []*clamd.ScanResult
 		scanResults = append(scanResults, result)
 
-		httpResponse(scanResults, w, config)
+		httpResponse(scanResults, w)
 
 	}
 }
 
-func scanFiles(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
+func scanFiles(clam *clamd.Clamd) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Parse the multipart form
 		if err := r.ParseMultipartForm(10 << 20); err != nil { // Set max memory to 10 MB for multipart form
@@ -236,6 +237,6 @@ func scanFiles(clam *clamd.Clamd, config *config.AppConfig) http.HandlerFunc {
 
 		}
 
-		httpResponse(scanResults, w, config)
+		httpResponse(scanResults, w)
 	}
 }

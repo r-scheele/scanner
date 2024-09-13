@@ -31,6 +31,7 @@ type ScanResult struct {
 	Raw         string
 	Description string
 	Status      string
+	MessageID   string
 }
 
 var EICAR = []byte(`X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*`)
